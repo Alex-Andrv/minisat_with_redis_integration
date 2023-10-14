@@ -5,6 +5,8 @@
 cmake_minimum_required(VERSION 3.5)
 project(MiniSat VERSION 2.2 LANGUAGES CXX)
 
+# Define the path to your hiredis library and headers
+
 # Check if minisat is being used directly or via add_subdirectory, but allow overriding
 if (NOT DEFINED MINISAT_MASTER_PROJECT)
     if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
@@ -84,16 +86,27 @@ set(targets libminisat)
 if (MINISAT_BUILD_BINARIES OR (MINISAT_BUILD_TESTING AND BUILD_TESTING) OR (MINISAT_TEST_BENCHMARKS AND BUILD_TESTING))
     # Also build two MiniSat executables
     # NOTE: `minisat` is used in tests
-    add_executable(minisat
-        minisat/core/Main.cc
-    )
-    target_link_libraries(minisat libminisat)
 
+    # Укажите путь к заголовочным файлам hiredis
+    include_directories(/usr/local/include/hiredis)
+
+    # Укажите путь к библиотеке hiredis
+    link_directories(/usr/local/lib)
+
+    add_executable(minisat
+            minisat/core/Main.cc
+    )
+
+    target_link_libraries(minisat libminisat hiredis)
+
+    # Добавьте hiredis в качестве зависимости
 
     add_executable(minisat-simp
-        minisat/simp/Main.cc
+            minisat/simp/Main.cc
     )
-    target_link_libraries(minisat-simp libminisat)
+
+    target_link_libraries(minisat-simp libminisat hiredis)
+
     list(APPEND targets minisat minisat-simp)
 endif()
 
@@ -175,7 +188,6 @@ if (MINISAT_TEST_BENCHMARKS AND BUILD_TESTING)
         ) # 1 day timeout
     endforeach(BENCHMARK)
 endif()
-
 
 ###############
 # Installation

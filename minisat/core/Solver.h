@@ -27,6 +27,8 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 #include "minisat/utils/Options.h"
 #include "minisat/core/SolverTypes.h"
 
+#include <hiredis.h>
+
 
 namespace Minisat {
 
@@ -190,6 +192,12 @@ protected:
     double              progress_estimate;// Set by 'search()'.
     bool                remove_satisfied; // Indicates whether possibly inefficient linear scan for satisfied clauses should be performed in 'simplify'.
 
+    const char * redis_host;
+    int redis_port;
+    unsigned int redis_last_from_minisat_id;
+    unsigned int redis_last_to_minisat_id;
+    unsigned int redis_last_learnt_id;
+
     ClauseAllocator     ca;
 
     // Temporaries (to reduce allocation overhead). Each variable is prefixed by the method in which it is
@@ -227,6 +235,15 @@ protected:
     void     reduceDB         ();                                                      // Reduce the set of learnt clauses.
     void     removeSatisfied  (vec<CRef>& cs);                                         // Shrink 'cs' to contain only non-satisfied clauses.
     void     rebuildOrderHeap ();
+
+    void save_learnts();
+    void load_clauses();
+
+    redisContext* get_context();
+    void redis_free(redisContext*);
+    void redis_save(redisContext*, CRef);
+    void redis_save_last_from_minisat_id(redisContext *context, unsigned int last_from_minisat_id);
+    bool load_clause(redisContext*, vec<Lit>&);
 
     // Maintaining Variable/Clause activity:
     //

@@ -96,6 +96,12 @@ Solver::Solver() :
   , conflict_budget    (-1)
   , propagation_budget (-1)
   , asynch_interrupt   (false)
+
+  , redis_host ("127.0.0.1")
+  , redis_port (6379)
+  , redis_last_from_minisat_id (0)
+  , redis_last_to_minisat_id (0)
+  , redis_last_learnt_id (0)
 {}
 
 
@@ -565,6 +571,7 @@ void Solver::reduceDB()
             learnts[j++] = learnts[i];
     }
     learnts.shrink(i - j);
+    redis_last_learnt_id = (learnts.size() > redis_last_learnt_id) ? redis_last_learnt_id : learnts.size();
     checkGarbage();
 }
 
@@ -690,7 +697,10 @@ lbool Solver::search(int nof_conflicts)
         }else{
             // NO CONFLICT
             if (nof_conflicts >= 0 && (conflictC >= nof_conflicts || !withinBudget())){
+                // сюда
                 // Reached bound on number of conflicts:
+                save_learnts();
+                load_clauses();
                 progress_estimate = progressEstimate();
                 cancelUntil(0);
                 return l_Undef; }
@@ -822,6 +832,117 @@ lbool Solver::solve_()
 
     cancelUntil(0);
     return status;
+}
+
+//=================================================================================================
+// Work with redis
+
+void Solver::save_learnts() {
+    assert(learnts.size() >= redis_last_learnt_id);
+    redisContext* context = get_context();
+    int i = redis_last_learnt_id;
+    for (; i < learnts.size(); i++) {
+        redis_save(context, learnts[i]);
+    }
+    redis_last_learnt_id = i;
+}
+
+void Solver::load_clauses() {
+    redisContext* context = get_context();
+    vec<Lit> learnt_clause;
+    learnt_clause.clear();
+    while (load_clause(context, learnt_clause)) {
+        learnt_clause.clear();
+        redis_last_to_minisat_id += 1;
+    }
+}
+
+redisContext* Solver::get_context() {
+    redisContext *c = redisConnect(redis_host, redis_port);
+    if (c == NULL || c->err) {
+        if (c) {
+            printf("Error: %s\n", c->errstr);
+            // handle error
+        } else {
+            printf("Can't allocate redis context\n");
+        }
+    }
+    return c;
+}
+
+void Solver::redis_free(redisContext* c) {
+    redisFree(c);
+}
+
+bool Solver::load_clause(redisContext* context, vec<Lit>& learnt_clause) {
+    assert (learnt_clause.size() == 0);
+    redisReply *reply = static_cast<redisReply*>(redisCommand(context, "LRANGE to_minisat:%d 0 -1", redis_last_to_minisat_id));
+
+    if (reply == NULL || reply->type != REDIS_REPLY_ARRAY || reply->element == NULL) {
+        return false;
+    }
+
+    for (int i = 0; i < reply->elements; i++) {
+        int elit = atoi(reply->element[i]->str);
+        assert (elit != 0);
+        int var = abs(elit)-1;
+        learnt_clause.push( (elit > 0) ? mkLit(var) : ~mkLit(var) );
+    }
+
+    if (learnt_clause.size() == 1) {
+        if (value(learnt_clause[0]) == l_Undef)
+            uncheckedEnqueue(learnt_clause[0]);
+    }else{
+        CRef cr = ca.alloc(learnt_clause, true);
+        learnts.push(cr);
+        attachClause(cr);
+        claBumpActivity(ca[cr]);
+    }
+    return true;
+}
+
+void Solver::redis_save(redisContext* context, CRef cr) {
+    const Clause& c = ca[cr];
+
+    redisReply *reply = static_cast<redisReply*>(redisCommand(context, "DEL from_minisat:%d", redis_last_from_minisat_id));
+
+    if (reply == NULL) {
+        if (context) {
+            printf("Error: %s\n", context->errstr);
+            // handle error
+        } else {
+            printf("Can't allocate redis context\n");
+        }
+    }
+
+    for (int i = 0; i < c.size(); i++)
+        if (value(c[i]) != l_False) {
+            redisReply *reply = static_cast<redisReply*>(redisCommand(context, "RPUSH from_minisat:%d %s%d",
+                                             redis_last_from_minisat_id, sign(c[i]) ? "-" : "", var(c[i]) + 1));
+            if (reply == NULL) {
+                if (context) {
+                    printf("Error: %s\n", context->errstr);
+                    // handle error
+                } else {
+                    printf("Can't allocate redis context\n");
+                }
+            }
+            freeReplyObject(reply);
+        }
+
+    redis_last_from_minisat_id++;
+}
+
+void Solver::redis_save_last_from_minisat_id(redisContext* context, unsigned int last_from_minisat_id) {
+    redisReply *reply = static_cast<redisReply*>(redisCommand(context,"SET last_from_minisat_id %d", last_from_minisat_id));
+    if (reply == NULL) {
+        if (context) {
+            printf("Error: %s\n", context->errstr);
+        // handle error
+        } else {
+            printf("Can't allocate redis context\n");
+        }
+    }
 }
 
 //=================================================================================================
