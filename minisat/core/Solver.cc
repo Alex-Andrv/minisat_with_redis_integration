@@ -904,6 +904,7 @@ bool Solver::load_clause(redisContext* context, vec<Lit>& learnt_clause) {
 void Solver::redis_save(redisContext* context, CRef cr) {
     const Clause& c = ca[cr];
 
+    assert(c.size() > 1);
     redisReply *reply = static_cast<redisReply*>(redisCommand(context, "DEL from_minisat:%d", redis_last_from_minisat_id));
 
     if (reply == NULL) {
@@ -915,8 +916,7 @@ void Solver::redis_save(redisContext* context, CRef cr) {
         }
     }
 
-    for (int i = 0; i < c.size(); i++)
-        if (value(c[i]) != l_False) {
+    for (int i = 0; i < c.size(); i++) {
             redisReply *reply = static_cast<redisReply*>(redisCommand(context, "RPUSH from_minisat:%d %s%d",
                                              redis_last_from_minisat_id, sign(c[i]) ? "-" : "", var(c[i]) + 1));
             if (reply == NULL) {
