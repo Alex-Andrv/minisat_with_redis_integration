@@ -569,9 +569,9 @@ void Solver::reduceDB()
             removeClause(learnts[i]);
         else
             learnts[j++] = learnts[i];
-    }
+        }
     learnts.shrink(i - j);
-    redis_last_learnt_id = (learnts.size() > redis_last_learnt_id) ? redis_last_learnt_id : learnts.size();
+    redis_last_learnt_id = learnts.size();
     checkGarbage();
 }
 
@@ -623,8 +623,10 @@ bool Solver::simplify()
     if (nAssigns() == simpDB_assigns || (simpDB_props > 0))
         return true;
 
+    save_learnts();
     // Remove satisfied clauses:
     removeSatisfied(learnts);
+    redis_last_learnt_id = learnts.size();
     if (remove_satisfied)        // Can be turned off.
         removeSatisfied(clauses);
     checkGarbage();
@@ -663,8 +665,7 @@ lbool Solver::search(int nof_conflicts)
         if (confl != CRef_Undef){
             // CONFLICT
             conflicts++; conflictC++;
-            if (decisionLevel() == 0) return l_False;
-
+            if (decisionLevel() == 0) return l_False;    
             learnt_clause.clear();
             analyze(confl, learnt_clause, backtrack_level);
             cancelUntil(backtrack_level);
@@ -681,19 +682,16 @@ lbool Solver::search(int nof_conflicts)
 
             varDecayActivity();
             claDecayActivity();
-
             if (--learntsize_adjust_cnt == 0){
                 learntsize_adjust_confl *= learntsize_adjust_inc;
                 learntsize_adjust_cnt    = (int)learntsize_adjust_confl;
                 max_learnts             *= learntsize_inc;
-
                 if (verbosity >= 1)
                     fprintf(stderr, "| %9d | %7d %8d %8d | %8d %8d %6.0f | %6.3f %% |\n",
                            (int)conflicts,
                            (int)dec_vars - (trail_lim.empty() ? trail.size() : trail_lim[0]), nClauses(), (int)clauses_literals,
                            (int)max_learnts, nLearnts(), (double)learnts_literals/nLearnts(), progressEstimate()*100);
             }
-
         }else{
             // NO CONFLICT
             if (nof_conflicts >= 0 && (conflictC >= nof_conflicts || !withinBudget())){
@@ -704,14 +702,14 @@ lbool Solver::search(int nof_conflicts)
                 progress_estimate = progressEstimate();
                 cancelUntil(0);
                 return l_Undef; }
-
             // Simplify the set of problem clauses:
             if (decisionLevel() == 0 && !simplify())
                 return l_False;
-
-            if (learnts.size()-nAssigns() >= max_learnts)
+            if (learnts.size()-nAssigns() >= max_learnts) {
                 // Reduce the set of learnt clauses:
+                save_learnts();
                 reduceDB();
+            }
 
             Lit next = lit_Undef;
             while (decisionLevel() < assumptions.size()){
@@ -734,9 +732,10 @@ lbool Solver::search(int nof_conflicts)
                 decisions++;
                 next = pickBranchLit();
 
-                if (next == lit_Undef)
+                if (next == lit_Undef) {
                     // Model found:
                     return l_True;
+                }
             }
 
             // Increase decision level and enqueue 'next'
@@ -844,10 +843,14 @@ void Solver::save_learnts() {
     for (; i < learnts.size(); i++) {
         redis_save(context, learnts[i]);
     }
+    
     redis_last_learnt_id = i;
+    assert(learnts.size() == redis_last_learnt_id);
+    redis_free(context);
 }
 
 void Solver::load_clauses() {
+    assert(redis_last_learnt_id == learnts.size());
     redisContext* context = get_context();
     vec<Lit> learnt_clause;
     learnt_clause.clear();
@@ -855,6 +858,7 @@ void Solver::load_clauses() {
         learnt_clause.clear();
         redis_last_to_minisat_id += 1;
     }
+    redis_free(context);
 }
 
 redisContext* Solver::get_context() {
@@ -929,7 +933,7 @@ void Solver::redis_save(redisContext* context, CRef cr) {
             }
             freeReplyObject(reply);
         }
-
+    assert(redis_last_from_minisat_id < INT_MAX);
     redis_last_from_minisat_id++;
 }
 
