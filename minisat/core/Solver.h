@@ -57,6 +57,7 @@ public:
 
     // Solving:
     //
+    bool flush_redis();
     bool    simplify     ();                        // Removes already satisfied clauses.
     bool    solve        (const vec<Lit>& assumps); // Search for a model that respects a given set of assumptions.
     lbool   solveLimited (const vec<Lit>& assumps); // Search for a model that respects a given set of assumptions (With resource constraints).
@@ -197,6 +198,10 @@ protected:
     unsigned int redis_last_from_minisat_id;
     unsigned int redis_last_to_minisat_id;
     unsigned int redis_last_learnt_id;
+    unsigned int redis_last_unit_id;
+    unsigned int redis_buffer;
+
+    vec<Lit>           units;          // List of learnt clauses.
 
     ClauseAllocator     ca;
 
@@ -240,9 +245,13 @@ protected:
     void load_clauses();
 
     redisContext* get_context();
+    char* to_str(const Clause&);
+    char* to_str(Lit);
+    char* from_str(char*, vec<Lit>&);
     void redis_free(redisContext*);
-    void redis_save(redisContext*, CRef);
-    void redis_save_last_from_minisat_id(redisContext *context, unsigned int last_from_minisat_id);
+    bool save_learnt_clauses(redisContext*);
+    bool save_unit_clauses(redisContext*);
+    bool redis_save_last_from_minisat_id(redisContext *context, unsigned int last_from_minisat_id);
     bool load_clause(redisContext*, vec<Lit>&);
 
     // Maintaining Variable/Clause activity:

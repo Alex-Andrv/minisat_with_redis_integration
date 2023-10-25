@@ -22,6 +22,8 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 
 #include "minisat/mtl/Sort.h"
 #include "minisat/core/Solver.h"
+#include <string>
+#include <cstring>
 
 using namespace Minisat;
 
@@ -102,6 +104,8 @@ Solver::Solver() :
   , redis_last_from_minisat_id (0)
   , redis_last_to_minisat_id (0)
   , redis_last_learnt_id (0)
+  , redis_last_unit_id (0)
+  , redis_buffer(5000)
 {}
 
 
@@ -459,6 +463,9 @@ void Solver::analyzeFinal(Lit p, vec<Lit>& out_conflict)
 void Solver::uncheckedEnqueue(Lit p, CRef from)
 {
     assert(value(p) == l_Undef);
+    if (from==CRef_Undef && decisionLevel() == 0) {
+        units.push(p);
+    }
     assigns[var(p)] = lbool(!sign(p));
     vardata[var(p)] = mkVarData(from, decisionLevel());
     trail.push_(p);
@@ -561,6 +568,7 @@ void Solver::reduceDB()
     double  extra_lim = cla_inc / learnts.size();    // Remove any clause below this activity
 
     sort(learnts, reduceDB_lt(ca));
+    // TODO move save learnts here
     // Don't delete binary or locked clauses. From the rest, delete clauses from the first half
     // and clauses with activity smaller than 'extra_lim':
     for (i = j = 0; i < learnts.size(); i++){
@@ -627,6 +635,7 @@ bool Solver::simplify()
     // Remove satisfied clauses:
     removeSatisfied(learnts);
     redis_last_learnt_id = learnts.size();
+
     if (remove_satisfied)        // Can be turned off.
         removeSatisfied(clauses);
     checkGarbage();
@@ -671,7 +680,9 @@ lbool Solver::search(int nof_conflicts)
             cancelUntil(backtrack_level);
 
             if (learnt_clause.size() == 1){
+                assert(decisionLevel() == 0);
                 uncheckedEnqueue(learnt_clause[0]);
+                load_clauses();
             }else{
                 CRef cr = ca.alloc(learnt_clause, true);
                 learnts.push(cr);
@@ -694,13 +705,15 @@ lbool Solver::search(int nof_conflicts)
             }
         }else{
             // NO CONFLICT
-            if (nof_conflicts >= 0 && (conflictC >= nof_conflicts || !withinBudget())){
-                // сюда
+            if (nof_conflicts >= 0 && (conflictC >= nof_conflicts || !withinBudget())) {
                 // Reached bound on number of conflicts:
                 save_learnts();
-                load_clauses();
                 progress_estimate = progressEstimate();
                 cancelUntil(0);
+                load_clauses();
+                if (!ok) {
+                    return l_False;
+                }
                 return l_Undef; }
             // Simplify the set of problem clauses:
             if (decisionLevel() == 0 && !simplify())
@@ -836,21 +849,139 @@ lbool Solver::solve_()
 //=================================================================================================
 // Work with redis
 
+bool Solver::flush_redis() {
+    redisContext *c = redisConnect(redis_host, redis_port);
+    redisReply *reply = (redisReply *)redisCommand(c, "FLUSHDB");
+
+    if (reply == NULL) {
+        fprintf(stderr, "Error in FLUSHDB command\n");
+        return ok = false;
+    }
+
+    redis_free(c);
+}
+
+char* Solver::to_str(const Clause& c) {
+    std::string formula;
+
+    for (int i = 0; i < c.size(); i++) {
+        formula += sign(c[i]) ? "-" : "";
+        formula += std::to_string(var(c[i]) + 1);
+        formula += " ";
+    }
+
+    formula += "0";
+
+    // Convert the string to a char*
+    char* charFormula = new char[formula.length() + 1];
+    std::strcpy(charFormula, formula.c_str());
+    return charFormula;
+}
+
+char* Solver::to_str(Lit lit) {
+    std::string formula;
+
+    formula += sign(lit) ? "-" : "";
+    formula += std::to_string(var(lit) + 1);
+    formula += " ";
+
+    formula += "0";
+
+    // Convert the string to a char*
+    char* charFormula = new char[formula.length() + 1];
+    std::strcpy(charFormula, formula.c_str());
+    return charFormula;
+}
+
+char* Solver::from_str(char* formula, vec<Lit>& learnt_clause) {
+    char* token = strtok(formula, " ");
+
+    while (token != NULL) {
+        int elit = atoi(token);
+        if (elit == 0) {
+            token = strtok(NULL, " ");
+            assert (token == NULL);
+            continue;
+        }
+        int var = abs(elit)-1;
+        learnt_clause.push( (elit > 0) ? mkLit(var) : ~mkLit(var));
+        token = strtok(NULL, " ");
+    }
+}
+
+bool Solver::save_learnt_clauses(redisContext* context) {
+    int curr = redis_last_learnt_id;
+    int end = learnts.size();
+    while (curr < end) {
+        redisReply *reply;
+        int buf = 0;
+        for (; curr < end && buf < redis_buffer; curr++, buf++) {
+            const Clause &c = ca[learnts[curr]];
+            assert(c.size() > 1);
+            redisAppendCommand(context, "SET from_minisat:%d %s", redis_last_from_minisat_id, to_str(c));
+            assert(redis_last_from_minisat_id < INT_MAX);
+            redis_last_from_minisat_id++;
+        }
+        while (buf-- > 0) {
+            redisGetReply(context,(void**)&reply); // reply for SET
+            if (reply == NULL) {
+                if (context) {
+                    printf("Error: %s\n", context->errstr);
+                    return ok = false;
+                    // handle error
+                } else {
+                    printf("Can't allocate redis context\n");
+                    return ok = false;
+                }
+            }
+            freeReplyObject(reply);
+        }
+    }
+    redis_last_learnt_id = curr;
+    assert(learnts.size() == redis_last_learnt_id);
+}
+
+bool Solver::save_unit_clauses(redisContext* context) {
+    int curr = redis_last_unit_id;
+    int end = units.size();
+    while (curr < end) {
+        redisReply *reply;
+        int buf = 0;
+        for (; curr < end && buf < redis_buffer; curr++, buf++) {
+            Lit lit = units[curr];
+            redisAppendCommand(context, "SET from_minisat:%d %s", redis_last_from_minisat_id, to_str(lit));
+            assert(redis_last_from_minisat_id < INT_MAX);
+            redis_last_from_minisat_id++;
+        }
+        while (buf-- > 0) {
+            redisGetReply(context,(void**)&reply); // reply for SET
+            if (reply == NULL) {
+                if (context) {
+                    printf("Error: %s\n", context->errstr);
+                    return ok = false;
+                    // handle error
+                } else {
+                    printf("Can't allocate redis context\n");
+                    return ok = false;
+                }
+            }
+            freeReplyObject(reply);
+        }
+    }
+    redis_last_unit_id = curr;
+    assert(units.size() == redis_last_unit_id);
+}
+
 void Solver::save_learnts() {
     assert(learnts.size() >= redis_last_learnt_id);
     redisContext* context = get_context();
-    int i = redis_last_learnt_id;
-    for (; i < learnts.size(); i++) {
-        redis_save(context, learnts[i]);
-    }
-    
-    redis_last_learnt_id = i;
-    assert(learnts.size() == redis_last_learnt_id);
+    save_learnt_clauses(context);
+    save_unit_clauses(context);
     redis_free(context);
 }
 
 void Solver::load_clauses() {
-    assert(redis_last_learnt_id == learnts.size());
+//    assert(redis_last_learnt_id == learnts.size());
     redisContext* context = get_context();
     vec<Lit> learnt_clause;
     learnt_clause.clear();
@@ -866,9 +997,13 @@ redisContext* Solver::get_context() {
     if (c == NULL || c->err) {
         if (c) {
             printf("Error: %s\n", c->errstr);
+            ok = false;
+            return NULL;
             // handle error
         } else {
             printf("Can't allocate redis context\n");
+            ok = false;
+            return NULL;
         }
     }
     return c;
@@ -880,22 +1015,26 @@ void Solver::redis_free(redisContext* c) {
 
 bool Solver::load_clause(redisContext* context, vec<Lit>& learnt_clause) {
     assert (learnt_clause.size() == 0);
-    redisReply *reply = static_cast<redisReply*>(redisCommand(context, "LRANGE to_minisat:%d 0 -1", redis_last_to_minisat_id));
+    redisReply *reply = static_cast<redisReply*>(redisCommand(context, "GET to_minisat:%d", redis_last_to_minisat_id));
 
-    if (reply == NULL || reply->type != REDIS_REPLY_ARRAY || reply->element == NULL) {
+    if (reply == NULL || reply->type != REDIS_REPLY_STRING || reply->str == NULL) {
         return false;
     }
-
-    for (int i = 0; i < reply->elements; i++) {
-        int elit = atoi(reply->element[i]->str);
-        assert (elit != 0);
-        int var = abs(elit)-1;
-        learnt_clause.push( (elit > 0) ? mkLit(var) : ~mkLit(var) );
-    }
+    from_str(reply->str, learnt_clause);
 
     if (learnt_clause.size() == 1) {
-        if (value(learnt_clause[0]) == l_Undef)
+        if (value(learnt_clause[0]) == l_Undef) {
             uncheckedEnqueue(learnt_clause[0]);
+            printf("New useful unit: %s%d \n", sign(learnt_clause[0]) ? "-" : "", var(learnt_clause[0]) + 1);
+        } else {
+            if (value(learnt_clause[0]) == l_True) {
+                printf("Is already %s%d  == l_True \n", sign(learnt_clause[0]) ? "-" : "", var(learnt_clause[0]) + 1);
+            } else {
+                // TODO ok = false
+                printf("Is already %s%d  == l_False. Is unsat \n", sign(learnt_clause[0]) ? "-" : "", var(learnt_clause[0]) + 1);
+                return ok = false;
+            }
+        }
     }else{
         CRef cr = ca.alloc(learnt_clause, true);
         learnts.push(cr);
@@ -905,46 +1044,16 @@ bool Solver::load_clause(redisContext* context, vec<Lit>& learnt_clause) {
     return true;
 }
 
-void Solver::redis_save(redisContext* context, CRef cr) {
-    const Clause& c = ca[cr];
-
-    assert(c.size() > 1);
-    redisReply *reply = static_cast<redisReply*>(redisCommand(context, "DEL from_minisat:%d", redis_last_from_minisat_id));
-
-    if (reply == NULL) {
-        if (context) {
-            printf("Error: %s\n", context->errstr);
-            // handle error
-        } else {
-            printf("Can't allocate redis context\n");
-        }
-    }
-
-    for (int i = 0; i < c.size(); i++) {
-            redisReply *reply = static_cast<redisReply*>(redisCommand(context, "RPUSH from_minisat:%d %s%d",
-                                             redis_last_from_minisat_id, sign(c[i]) ? "-" : "", var(c[i]) + 1));
-            if (reply == NULL) {
-                if (context) {
-                    printf("Error: %s\n", context->errstr);
-                    // handle error
-                } else {
-                    printf("Can't allocate redis context\n");
-                }
-            }
-            freeReplyObject(reply);
-        }
-    assert(redis_last_from_minisat_id < INT_MAX);
-    redis_last_from_minisat_id++;
-}
-
-void Solver::redis_save_last_from_minisat_id(redisContext* context, unsigned int last_from_minisat_id) {
+bool Solver::redis_save_last_from_minisat_id(redisContext* context, unsigned int last_from_minisat_id) {
     redisReply *reply = static_cast<redisReply*>(redisCommand(context,"SET last_from_minisat_id %d", last_from_minisat_id));
     if (reply == NULL) {
         if (context) {
             printf("Error: %s\n", context->errstr);
+            return ok = false;
         // handle error
         } else {
             printf("Can't allocate redis context\n");
+            return ok = false;
         }
     }
 }
