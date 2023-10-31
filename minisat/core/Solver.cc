@@ -33,18 +33,18 @@ using namespace Minisat;
 
 static const char* _cat = "CORE";
 
-static DoubleOption  opt_var_decay         (_cat, "var-decay",   "The variable activity decay factor",            0.95,     DoubleRange(0, false, 1, false));
-static DoubleOption  opt_clause_decay      (_cat, "cla-decay",   "The clause activity decay factor",              0.999,    DoubleRange(0, false, 1, false));
-static DoubleOption  opt_random_var_freq   (_cat, "rnd-freq",    "The frequency with which the decision heuristic tries to choose a random variable", 0, DoubleRange(0, true, 1, true));
-static DoubleOption  opt_random_seed       (_cat, "rnd-seed",    "Used by the random variable selection",         91648253, DoubleRange(0, false, HUGE_VAL, false));
-static IntOption     opt_ccmin_mode        (_cat, "ccmin-mode",  "Controls conflict clause minimization (0=none, 1=basic, 2=deep)", 2, IntRange(0, 2));
-static IntOption     opt_phase_saving      (_cat, "phase-saving", "Controls the level of phase saving (0=none, 1=limited, 2=full)", 2, IntRange(0, 2));
-static BoolOption    opt_rnd_init_act      (_cat, "rnd-init",    "Randomize the initial activity", false);
-static BoolOption    opt_luby_restart      (_cat, "luby",        "Use the Luby restart sequence", true);
-static IntOption     opt_restart_first     (_cat, "rfirst",      "The base restart interval", 100, IntRange(1, INT32_MAX));
-static DoubleOption  opt_restart_inc       (_cat, "rinc",        "Restart interval increase factor", 2, DoubleRange(1, false, HUGE_VAL, false));
-static DoubleOption  opt_garbage_frac      (_cat, "gc-frac",     "The fraction of wasted memory allowed before a garbage collection is triggered",  0.20, DoubleRange(0, false, HUGE_VAL, false));
-
+static DoubleOption  opt_var_decay         (_cat, "var-decay",       "The variable activity decay factor",            0.95,     DoubleRange(0, false, 1, false));
+static DoubleOption  opt_clause_decay      (_cat, "cla-decay",       "The clause activity decay factor",              0.999,    DoubleRange(0, false, 1, false));
+static DoubleOption  opt_random_var_freq   (_cat, "rnd-freq",        "The frequency with which the decision heuristic tries to choose a random variable", 0, DoubleRange(0, true, 1, true));
+static DoubleOption  opt_random_seed       (_cat, "rnd-seed",        "Used by the random variable selection",         91648253, DoubleRange(0, false, HUGE_VAL, false));
+static IntOption     opt_ccmin_mode        (_cat, "ccmin-mode",      "Controls conflict clause minimization (0=none, 1=basic, 2=deep)", 2, IntRange(0, 2));
+static IntOption     opt_phase_saving      (_cat, "phase-saving",    "Controls the level of phase saving (0=none, 1=limited, 2=full)", 2, IntRange(0, 2));
+static BoolOption    opt_rnd_init_act      (_cat, "rnd-init",        "Randomize the initial activity", false);
+static BoolOption    opt_luby_restart      (_cat, "luby",            "Use the Luby restart sequence", true);
+static IntOption     opt_restart_first     (_cat, "rfirst",          "The base restart interval", 100, IntRange(1, INT32_MAX));
+static DoubleOption  opt_restart_inc       (_cat, "rinc",            "Restart interval increase factor", 2, DoubleRange(1, false, HUGE_VAL, false));
+static DoubleOption  opt_garbage_frac      (_cat, "gc-frac",         "The fraction of wasted memory allowed before a garbage collection is triggered",  0.20, DoubleRange(0, false, HUGE_VAL, false));
+static IntOption     opt_max_clause_len    (_cat, "max-clause-len",  "Maximum length of the cloze that we save in redis",  10, IntRange(1, 100));
 
 //=================================================================================================
 // Constructor/Destructor:
@@ -106,6 +106,7 @@ Solver::Solver() :
   , redis_last_learnt_id (0)
   , redis_last_unit_id (0)
   , redis_buffer(5000)
+  , max_clause_len(opt_max_clause_len)
 {}
 
 
@@ -854,7 +855,7 @@ bool Solver::flush_redis() {
     redisReply *reply = (redisReply *)redisCommand(c, "FLUSHDB");
 
     if (reply == NULL) {
-        fprintf(stderr, "Error in FLUSHDB command\n");
+        fprintf(stderr, "Error in FLUSHDB command. Pleas run redis, or run 'docker compose up' with redis image\n");
         return ok = false;
     }
 
@@ -917,6 +918,10 @@ bool Solver::save_learnt_clauses(redisContext* context) {
         int buf = 0;
         for (; curr < end && buf < redis_buffer; curr++, buf++) {
             const Clause &c = ca[learnts[curr]];
+            if (c.size() > max_clause_len) {
+                buf--;
+                continue;
+            }
             assert(c.size() > 1);
             redisAppendCommand(context, "SET from_minisat:%d %s", redis_last_from_minisat_id, to_str(c));
             assert(redis_last_from_minisat_id < INT_MAX);

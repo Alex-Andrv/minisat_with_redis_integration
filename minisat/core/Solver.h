@@ -200,6 +200,7 @@ protected:
     unsigned int redis_last_learnt_id;
     unsigned int redis_last_unit_id;
     unsigned int redis_buffer;
+    unsigned int max_clause_len;
 
     vec<Lit>           units;          // List of learnt clauses.
 
