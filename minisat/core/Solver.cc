@@ -45,7 +45,7 @@ static IntOption     opt_restart_first     (_cat, "rfirst",          "The base r
 static DoubleOption  opt_restart_inc       (_cat, "rinc",            "Restart interval increase factor", 2, DoubleRange(1, false, HUGE_VAL, false));
 static DoubleOption  opt_garbage_frac      (_cat, "gc-frac",         "The fraction of wasted memory allowed before a garbage collection is triggered",  0.20, DoubleRange(0, false, HUGE_VAL, false));
 static IntOption     opt_max_clause_len    (_cat, "max-clause-len",  "Maximum length of the cloze that we save in redis",  10, IntRange(1, 100));
-
+static IntOption     opt_redis_buffer      (_cat, "redis-buffer",    "The maximum packet length in Redis",  5000, IntRange(100, 10000));
 //=================================================================================================
 // Constructor/Destructor:
 
@@ -105,7 +105,7 @@ Solver::Solver() :
   , redis_last_to_minisat_id (0)
   , redis_last_learnt_id (0)
   , redis_last_unit_id (0)
-  , redis_buffer(5000)
+  , redis_buffer(opt_redis_buffer)
   , max_clause_len(opt_max_clause_len)
 {}
 
@@ -1030,13 +1030,13 @@ bool Solver::load_clause(redisContext* context, vec<Lit>& learnt_clause) {
     if (learnt_clause.size() == 1) {
         if (value(learnt_clause[0]) == l_Undef) {
             uncheckedEnqueue(learnt_clause[0]);
-            printf("New useful unit: %s%d \n", sign(learnt_clause[0]) ? "-" : "", var(learnt_clause[0]) + 1);
+            fprintf(stderr, "New useful unit: %s%d \n", sign(learnt_clause[0]) ? "-" : "", var(learnt_clause[0]) + 1);
         } else {
             if (value(learnt_clause[0]) == l_True) {
-                printf("Is already %s%d  == l_True \n", sign(learnt_clause[0]) ? "-" : "", var(learnt_clause[0]) + 1);
+                fprintf(stderr, "Is already %s%d  == l_True \n", sign(learnt_clause[0]) ? "-" : "", var(learnt_clause[0]) + 1);
             } else {
                 // TODO ok = false
-                printf("Is already %s%d  == l_False. Is unsat \n", sign(learnt_clause[0]) ? "-" : "", var(learnt_clause[0]) + 1);
+                fprintf(stderr, "Is already %s%d  == l_False. Is unsat \n", sign(learnt_clause[0]) ? "-" : "", var(learnt_clause[0]) + 1);
                 return ok = false;
             }
         }
