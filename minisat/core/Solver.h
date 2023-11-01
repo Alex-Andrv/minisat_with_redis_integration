@@ -253,7 +253,9 @@ protected:
     bool save_learnt_clauses(redisContext*);
     bool save_unit_clauses(redisContext*);
     bool redis_save_last_from_minisat_id(redisContext *context, unsigned int last_from_minisat_id);
-    bool load_clause(redisContext*, vec<Lit>&);
+    bool load_clause(redisReply*, vec<Lit>&);
+    int get_redis_queue_len(redisContext*);
+    redisReply** rpop(redisContext*, int);
 
     // Maintaining Variable/Clause activity:
     //

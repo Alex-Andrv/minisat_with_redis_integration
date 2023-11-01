@@ -46,6 +46,8 @@ static DoubleOption  opt_restart_inc       (_cat, "rinc",            "Restart in
 static DoubleOption  opt_garbage_frac      (_cat, "gc-frac",         "The fraction of wasted memory allowed before a garbage collection is triggered",  0.20, DoubleRange(0, false, HUGE_VAL, false));
 static IntOption     opt_max_clause_len    (_cat, "max-clause-len",  "Maximum length of the cloze that we save in redis",  10, IntRange(1, 100));
 static IntOption     opt_redis_buffer      (_cat, "redis-buffer",    "The maximum packet length in Redis",  5000, IntRange(100, 10000));
+static IntOption     opt_redis_port        (_cat, "redis-port",      "Redis port",  6379, IntRange(100, 10000));
+static StringOption  opt_redis_host        (_cat, "redis-host ",     "Redis host", "127.0.0.1");
 //=================================================================================================
 // Constructor/Destructor:
 
@@ -99,8 +101,8 @@ Solver::Solver() :
   , propagation_budget (-1)
   , asynch_interrupt   (false)
 
-  , redis_host ("127.0.0.1")
-  , redis_port (6379)
+  , redis_host (opt_redis_host)
+  , redis_port (opt_redis_port)
   , redis_last_from_minisat_id (0)
   , redis_last_to_minisat_id (0)
   , redis_last_learnt_id (0)
@@ -631,7 +633,8 @@ bool Solver::simplify()
 
     if (nAssigns() == simpDB_assigns || (simpDB_props > 0))
         return true;
-
+    if (verbosity > 1)
+        fprintf(stderr, "Save new learnts during simlification\n");
     save_learnts();
     // Remove satisfied clauses:
     removeSatisfied(learnts);
@@ -708,6 +711,8 @@ lbool Solver::search(int nof_conflicts)
             // NO CONFLICT
             if (nof_conflicts >= 0 && (conflictC >= nof_conflicts || !withinBudget())) {
                 // Reached bound on number of conflicts:
+                if (verbosity > 1)
+                    fprintf(stderr, "Save new learnts during restart\n");
                 save_learnts();
                 progress_estimate = progressEstimate();
                 cancelUntil(0);
@@ -721,6 +726,8 @@ lbool Solver::search(int nof_conflicts)
                 return l_False;
             if (learnts.size()-nAssigns() >= max_learnts) {
                 // Reduce the set of learnt clauses:
+                if (verbosity > 1)
+                    fprintf(stderr, "Save new learnts during reduce\n");
                 save_learnts();
                 reduceDB();
             }
@@ -913,6 +920,7 @@ char* Solver::from_str(char* formula, vec<Lit>& learnt_clause) {
 bool Solver::save_learnt_clauses(redisContext* context) {
     int curr = redis_last_learnt_id;
     int end = learnts.size();
+    int __offset = 0;
     while (curr < end) {
         redisReply *reply;
         int buf = 0;
@@ -923,9 +931,9 @@ bool Solver::save_learnt_clauses(redisContext* context) {
                 continue;
             }
             assert(c.size() > 1);
-            redisAppendCommand(context, "SET from_minisat:%d %s", redis_last_from_minisat_id, to_str(c));
-            assert(redis_last_from_minisat_id < INT_MAX);
-            redis_last_from_minisat_id++;
+            redisAppendCommand(context, "SET from_minisat:%d %s", redis_last_from_minisat_id + __offset, to_str(c));
+            assert(redis_last_from_minisat_id + __offset < INT_MAX);
+            __offset++;
         }
         while (buf-- > 0) {
             redisGetReply(context,(void**)&reply); // reply for SET
@@ -942,6 +950,9 @@ bool Solver::save_learnt_clauses(redisContext* context) {
             freeReplyObject(reply);
         }
     }
+    redis_last_from_minisat_id += __offset;
+    if (verbosity > 1)
+        fprintf(stderr, "new saved: %d\n", __offset);
     redis_last_learnt_id = curr;
     assert(learnts.size() == redis_last_learnt_id);
 }
@@ -989,10 +1000,14 @@ void Solver::load_clauses() {
 //    assert(redis_last_learnt_id == learnts.size());
     redisContext* context = get_context();
     vec<Lit> learnt_clause;
-    learnt_clause.clear();
-    while (load_clause(context, learnt_clause)) {
-        learnt_clause.clear();
-        redis_last_to_minisat_id += 1;
+
+    int len = get_redis_queue_len(context);
+    if (len > 0) {
+        redisReply **elements = rpop(context, len);
+        for (int i = 0; i < len; i++) {
+            learnt_clause.clear();
+            load_clause(elements[i], learnt_clause);
+        }
     }
     redis_free(context);
 }
@@ -1014,18 +1029,59 @@ redisContext* Solver::get_context() {
     return c;
 }
 
+int Solver::get_redis_queue_len(redisContext* context) {
+    // Use the LLEN command to get the length of the list
+    redisReply *reply = (redisReply *)redisCommand(context, "LLEN to_minisat");
+
+    if (reply == NULL) {
+        printf("Error executing LLEN command\n");
+        ok = false;
+        return 0;
+    }
+
+    if (reply->type == REDIS_REPLY_INTEGER) {
+        return reply->integer;
+    } else {
+        printf("Unexpected reply type: %d\n", reply->type);
+        ok = false;
+        return 0;
+    }
+
+    freeReplyObject(reply);
+}
+
+redisReply** Solver::rpop(redisContext* context, int len) {
+    redisReply *reply = (redisReply *)redisCommand(context, "RPOP to_minisat %d", len);
+
+    if (reply == NULL) {
+        printf("Error executing RPOP command\n");
+        ok = false;
+        return NULL;
+    }
+
+    if (reply->type == REDIS_REPLY_ARRAY) {
+        assert(len == reply->elements);
+        return reply->element;
+    } else {
+        printf("Unexpected reply type: %d\n", reply->type);
+        ok = false;
+        return NULL;
+    }
+
+    freeReplyObject(reply);
+}
+
 void Solver::redis_free(redisContext* c) {
     redisFree(c);
 }
 
-bool Solver::load_clause(redisContext* context, vec<Lit>& learnt_clause) {
+bool Solver::load_clause(redisReply* element, vec<Lit>& learnt_clause) {
     assert (learnt_clause.size() == 0);
-    redisReply *reply = static_cast<redisReply*>(redisCommand(context, "GET to_minisat:%d", redis_last_to_minisat_id));
 
-    if (reply == NULL || reply->type != REDIS_REPLY_STRING || reply->str == NULL) {
+    if (element == NULL || element->type != REDIS_REPLY_STRING || element->str == NULL) {
         return false;
     }
-    from_str(reply->str, learnt_clause);
+    from_str(element->str, learnt_clause);
 
     if (learnt_clause.size() == 1) {
         if (value(learnt_clause[0]) == l_Undef) {
