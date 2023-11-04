@@ -47,7 +47,7 @@ static DoubleOption  opt_garbage_frac      (_cat, "gc-frac",         "The fracti
 static IntOption     opt_max_clause_len    (_cat, "max-clause-len",  "Maximum length of the cloze that we save in redis",  10, IntRange(1, 100));
 static IntOption     opt_redis_buffer      (_cat, "redis-buffer",    "The maximum packet length in Redis",  5000, IntRange(100, 10000));
 static IntOption     opt_redis_port        (_cat, "redis-port",      "Redis port",  6379, IntRange(100, 10000));
-static StringOption  opt_redis_host        (_cat, "redis-host ",     "Redis host", "127.0.0.1");
+static StringOption  opt_redis_host        (_cat, "redis-host",      "Redis host",  "127.0.0.1");
 //=================================================================================================
 // Constructor/Destructor:
 
