@@ -87,11 +87,15 @@ if (MINISAT_BUILD_BINARIES OR (MINISAT_BUILD_TESTING AND BUILD_TESTING) OR (MINI
     # Also build two MiniSat executables
     # NOTE: `minisat` is used in tests
 
-    # Укажите путь к заголовочным файлам hiredis
-    include_directories(/usr/local/include/hiredis)
+    set(HIREDIS_INCLUDE_DIR $ENV{HIREDIS_INCLUDE_DIR})
 
-    # Укажите путь к библиотеке hiredis
-    link_directories(/usr/local/lib)
+    set(HIREDIS_LIB $ENV{HIREDIS_LIB})
+    message(STATUS "The value of HIREDIS_INCLUDE_DIR is ${HIREDIS_INCLUDE_DIR}")
+    message(STATUS "The value of HIREDIS_LIB is ${HIREDIS_LIB}")
+
+    include_directories(${HIREDIS_INCLUDE_DIR})
+
+    link_directories(${HIREDIS_LIB})
 
     add_executable(minisat
             minisat/core/Main.cc
