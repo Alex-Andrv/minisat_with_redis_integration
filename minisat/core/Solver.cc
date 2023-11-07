@@ -989,7 +989,6 @@ bool Solver::save_unit_clauses(redisContext* context) {
 }
 
 void Solver::save_learnts() {
-    fprintf(stderr, "save_learnts \n");
     assert(learnts.size() >= redis_last_learnt_id);
     redisContext* context = get_context();
     save_learnt_clauses(context);
@@ -999,7 +998,6 @@ void Solver::save_learnts() {
 
 void Solver::load_clauses() {
 //    assert(redis_last_learnt_id == learnts.size());
-    fprintf(stderr, "load_clauses \n");
     redisContext* context = get_context();
     vec<Lit> learnt_clause;
 
