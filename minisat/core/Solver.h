@@ -248,7 +248,7 @@ protected:
     redisContext* get_context();
     char* to_str(const Clause&);
     char* to_str(Lit);
-    char* from_str(char*, vec<Lit>&);
+    void from_str(char*, vec<Lit>&);
     void redis_free(redisContext*);
     bool save_learnt_clauses(redisContext*);
     bool save_unit_clauses(redisContext*);

@@ -143,9 +143,10 @@ int main(int argc, char** argv)
         if (in == NULL)
             fprintf(stderr, "ERROR! Could not open file: %s\n", argc == 1 ? "<stdin>" : argv[1]), exit(1);
         
-        if (S.verbosity > 0){
+        if (S.verbosity > 0) {
             fprintf(stderr, "============================[ Problem Statistics ]=============================\n");
-            fprintf(stderr, "|                                                                             |\n"); }
+            fprintf(stderr, "|                                                                             |\n"); 
+        }
         
         parse_DIMACS(in, S);
         fclose(in);

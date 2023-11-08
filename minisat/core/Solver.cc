@@ -626,6 +626,7 @@ void Solver::rebuildOrderHeap()
 |________________________________________________________________________________________________@*/
 bool Solver::simplify()
 {
+    if (verbosity > 1) fprintf(stderr, "simplify()\n");
     assert(decisionLevel() == 0);
 
     if (!ok || propagate() != CRef_Undef)
@@ -667,6 +668,7 @@ bool Solver::simplify()
 |________________________________________________________________________________________________@*/
 lbool Solver::search(int nof_conflicts)
 {
+    if (verbosity > 1) fprintf(stderr, "search()\n");
     assert(ok);
     int         backtrack_level;
     int         conflictC = 0;
@@ -858,15 +860,19 @@ lbool Solver::solve_()
 // Work with redis
 
 bool Solver::flush_redis() {
+    if (verbosity > 1) fprintf(stderr, "flush_redis()\n");
     redisContext *c = redisConnect(redis_host, redis_port);
-    redisReply *reply = (redisReply *)redisCommand(c, "FLUSHDB");
+    redisReply *reply = (redisReply*) redisCommand(c, "FLUSHDB");
 
+    bool res = true;
     if (reply == NULL) {
         fprintf(stderr, "Error in FLUSHDB command. Pleas run redis, or run 'docker compose up' with redis image\n");
-        return ok = false;
+        ok = false;
+        res = false;
     }
 
     redis_free(c);
+    return res;
 }
 
 char* Solver::to_str(const Clause& c) {
@@ -901,7 +907,8 @@ char* Solver::to_str(Lit lit) {
     return charFormula;
 }
 
-char* Solver::from_str(char* formula, vec<Lit>& learnt_clause) {
+void Solver::from_str(char* formula, vec<Lit>& learnt_clause) {
+    if (verbosity > 1) fprintf(stderr, "from_str(formula = %p)\n", formula);
     char* token = strtok(formula, " ");
 
     while (token != NULL) {
@@ -955,6 +962,7 @@ bool Solver::save_learnt_clauses(redisContext* context) {
         fprintf(stderr, "new saved: %d\n", __offset);
     redis_last_learnt_id = curr;
     assert(learnts.size() == redis_last_learnt_id);
+    return true;
 }
 
 bool Solver::save_unit_clauses(redisContext* context) {
@@ -973,11 +981,11 @@ bool Solver::save_unit_clauses(redisContext* context) {
             redisGetReply(context,(void**)&reply); // reply for SET
             if (reply == NULL) {
                 if (context) {
-                    printf("Error: %s\n", context->errstr);
+                    fprintf(stderr, "Error: %s\n", context->errstr);
                     return ok = false;
                     // handle error
                 } else {
-                    printf("Can't allocate redis context\n");
+                    fprintf(stderr, "Can't allocate redis context\n");
                     return ok = false;
                 }
             }
@@ -986,9 +994,11 @@ bool Solver::save_unit_clauses(redisContext* context) {
     }
     redis_last_unit_id = curr;
     assert(units.size() == redis_last_unit_id);
+    return true;
 }
 
 void Solver::save_learnts() {
+    if (verbosity > 1) fprintf(stderr, "save_learnts()...\n");
     assert(learnts.size() >= redis_last_learnt_id);
     redisContext* context = get_context();
     save_learnt_clauses(context);
@@ -997,7 +1007,8 @@ void Solver::save_learnts() {
 }
 
 void Solver::load_clauses() {
-//    assert(redis_last_learnt_id == learnts.size());
+    if (verbosity > 1) fprintf(stderr, "load_clauses()\n");
+    // assert(redis_last_learnt_id == learnts.size());
     redisContext* context = get_context();
     vec<Lit> learnt_clause;
 
@@ -1030,6 +1041,8 @@ redisContext* Solver::get_context() {
 }
 
 int Solver::get_redis_queue_len(redisContext* context) {
+    if (verbosity > 1) fprintf(stderr, "get_redis_queue_len()\n");
+
     // Use the LLEN command to get the length of the list
     redisReply *reply = (redisReply *)redisCommand(context, "LLEN to_minisat");
 
@@ -1039,36 +1052,50 @@ int Solver::get_redis_queue_len(redisContext* context) {
         return 0;
     }
 
+    int res;
     if (reply->type == REDIS_REPLY_INTEGER) {
-        return reply->integer;
+        res = reply->integer;
     } else {
         printf("Unexpected reply type: %d\n", reply->type);
         ok = false;
-        return 0;
+        res = 0;
     }
 
     freeReplyObject(reply);
+    return res;
 }
 
 redisReply** Solver::rpop(redisContext* context, int len) {
-    redisReply *reply = (redisReply *)redisCommand(context, "RPOP to_minisat %d", len);
+    if (verbosity > 1) fprintf(stderr, "rpop(context = %p, len = %d)\n", context, len);
+    redisReply *reply = (redisReply*) redisCommand(context, "RPOP to_minisat %d", len);
+    // redisReply *reply;
+    // if (len > 0) {
+        // reply = (redisReply*) redisCommand(context, "LRANGE to_minisat -%d -1", len);
+    // } else {
+        // reply = (redisReply*) redisCommand(context, "LRANGE to_minisat 1 0"); // force empty array
+    // }
+
+    redisReply** res;
 
     if (reply == NULL) {
-        printf("Error executing RPOP command\n");
+        fprintf(stderr, "Error executing RPOP command\n");
         ok = false;
-        return NULL;
-    }
-
-    if (reply->type == REDIS_REPLY_ARRAY) {
-        assert(len == reply->elements);
-        return reply->element;
+        res = NULL;
     } else {
-        printf("Unexpected reply type: %d\n", reply->type);
-        ok = false;
-        return NULL;
+        if (reply->type == REDIS_REPLY_ARRAY) {
+            assert(len == reply->elements);
+            res = reply->element;
+        } else {
+            fprintf(stderr, "Unexpected reply type: %d\n", reply->type);
+            if (reply->type == REDIS_REPLY_ERROR)
+                fprintf(stderr, "Redis Error: %s\n", reply->str);
+            ok = false;
+            res = NULL;
+        }
     }
 
     freeReplyObject(reply);
+    return res;
 }
 
 void Solver::redis_free(redisContext* c) {
@@ -1076,7 +1103,8 @@ void Solver::redis_free(redisContext* c) {
 }
 
 bool Solver::load_clause(redisReply* element, vec<Lit>& learnt_clause) {
-    assert (learnt_clause.size() == 0);
+    if (verbosity > 1) fprintf(stderr, "load_clause(element = %p)\n", element);
+    assert(learnt_clause.size() == 0);
 
     if (element == NULL || element->type != REDIS_REPLY_STRING || element->str == NULL) {
         return false;
@@ -1106,17 +1134,18 @@ bool Solver::load_clause(redisReply* element, vec<Lit>& learnt_clause) {
 }
 
 bool Solver::redis_save_last_from_minisat_id(redisContext* context, unsigned int last_from_minisat_id) {
-    redisReply *reply = static_cast<redisReply*>(redisCommand(context,"SET last_from_minisat_id %d", last_from_minisat_id));
+    redisReply *reply = (redisReply*) redisCommand(context, "SET last_from_minisat_id %d", last_from_minisat_id);
     if (reply == NULL) {
         if (context) {
-            printf("Error: %s\n", context->errstr);
+            fprintf(stderr, "Error: %s\n", context->errstr);
             return ok = false;
         // handle error
         } else {
-            printf("Can't allocate redis context\n");
+            fprintf(stderr, "Can't allocate redis context\n");
             return ok = false;
         }
     }
+    return true;
 }
 
 //=================================================================================================
