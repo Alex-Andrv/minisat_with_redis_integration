@@ -907,7 +907,7 @@ char* Solver::to_str(Lit lit) {
     return charFormula;
 }
 
-void Solver::from_str(char* formula, vec<Lit>& learnt_clause) {
+bool Solver::from_str(char* formula, vec<Lit>& learnt_clause) {
     if (verbosity > 1) fprintf(stderr, "from_str(formula = %p)\n", formula);
     char* token = strtok(formula, " ");
 
@@ -922,6 +922,7 @@ void Solver::from_str(char* formula, vec<Lit>& learnt_clause) {
         learnt_clause.push( (elit > 0) ? mkLit(var) : ~mkLit(var));
         token = strtok(NULL, " ");
     }
+    return true;
 }
 
 bool Solver::save_learnt_clauses(redisContext* context) {
@@ -946,11 +947,11 @@ bool Solver::save_learnt_clauses(redisContext* context) {
             redisGetReply(context,(void**)&reply); // reply for SET
             if (reply == NULL) {
                 if (context) {
-                    printf("Error: %s\n", context->errstr);
+                    fprintf(stderr, "Error: %s\n", context->errstr);
                     return ok = false;
                     // handle error
                 } else {
-                    printf("Can't allocate redis context\n");
+                    fprintf(stderr, "Can't allocate redis context\n");
                     return ok = false;
                 }
             }
@@ -1027,12 +1028,12 @@ redisContext* Solver::get_context() {
     redisContext *c = redisConnect(redis_host, redis_port);
     if (c == NULL || c->err) {
         if (c) {
-            printf("Error: %s\n", c->errstr);
+            fprintf(stderr, "Error: %s\n", c->errstr);
             ok = false;
             return NULL;
             // handle error
         } else {
-            printf("Can't allocate redis context\n");
+            fprintf(stderr, "Can't allocate redis context\n");
             ok = false;
             return NULL;
         }
@@ -1047,7 +1048,7 @@ int Solver::get_redis_queue_len(redisContext* context) {
     redisReply *reply = (redisReply *)redisCommand(context, "LLEN to_minisat");
 
     if (reply == NULL) {
-        printf("Error executing LLEN command\n");
+        fprintf(stderr, "Error executing LLEN command\n");
         ok = false;
         return 0;
     }
@@ -1056,7 +1057,7 @@ int Solver::get_redis_queue_len(redisContext* context) {
     if (reply->type == REDIS_REPLY_INTEGER) {
         res = reply->integer;
     } else {
-        printf("Unexpected reply type: %d\n", reply->type);
+        fprintf(stderr, "Unexpected reply type: %d\n", reply->type);
         ok = false;
         res = 0;
     }
