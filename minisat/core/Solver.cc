@@ -926,11 +926,11 @@ bool Solver::from_str(char* formula, vec<Lit>& learnt_clause) {
 }
 
 bool Solver::save_learnt_clauses(redisContext* context) {
+    if (verbosity > 1) fprintf(stderr, "save_learnt_clauses(context = %p)\n", context);
     int curr = redis_last_learnt_id;
     int end = learnts.size();
     int __offset = 0;
     while (curr < end) {
-        redisReply *reply;
         int buf = 0;
         for (; curr < end && buf < redis_buffer; curr++, buf++) {
             const Clause &c = ca[learnts[curr]];
@@ -944,16 +944,12 @@ bool Solver::save_learnt_clauses(redisContext* context) {
             __offset++;
         }
         while (buf-- > 0) {
+            redisReply *reply;
             redisGetReply(context,(void**)&reply); // reply for SET
             if (reply == NULL) {
-                if (context) {
-                    fprintf(stderr, "Error: %s\n", context->errstr);
-                    return ok = false;
-                    // handle error
-                } else {
-                    fprintf(stderr, "Can't allocate redis context\n");
-                    return ok = false;
-                }
+                fprintf(stderr, "Error: %s\n", context->errstr);
+                ok = false;
+                throw 42;
             }
             freeReplyObject(reply);
         }
@@ -967,6 +963,7 @@ bool Solver::save_learnt_clauses(redisContext* context) {
 }
 
 bool Solver::save_unit_clauses(redisContext* context) {
+    if (verbosity > 1) fprintf(stderr, "save_unit_clauses(context = %p)\n", context);
     int curr = redis_last_unit_id;
     int end = units.size();
     while (curr < end) {
@@ -981,14 +978,9 @@ bool Solver::save_unit_clauses(redisContext* context) {
         while (buf-- > 0) {
             redisGetReply(context,(void**)&reply); // reply for SET
             if (reply == NULL) {
-                if (context) {
-                    fprintf(stderr, "Error: %s\n", context->errstr);
-                    return ok = false;
-                    // handle error
-                } else {
-                    fprintf(stderr, "Can't allocate redis context\n");
-                    return ok = false;
-                }
+                fprintf(stderr, "Error: %s\n", context->errstr);
+                ok = false;
+                throw 42;
             }
             freeReplyObject(reply);
         }
@@ -1000,6 +992,10 @@ bool Solver::save_unit_clauses(redisContext* context) {
 
 void Solver::save_learnts() {
     if (verbosity > 1) fprintf(stderr, "save_learnts()...\n");
+    if (learnts.size() < redis_last_learnt_id) {
+        fprintf(stderr, "Assert failed: learnts.size() = %ld, redis_last_learnt_id = %d\n", learnts.size(), redis_last_learnt_id);
+        throw 42;
+    }
     assert(learnts.size() >= redis_last_learnt_id);
     redisContext* context = get_context();
     save_learnt_clauses(context);
