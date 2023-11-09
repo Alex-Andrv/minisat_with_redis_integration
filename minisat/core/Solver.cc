@@ -1008,20 +1008,89 @@ void Solver::save_learnts() {
 }
 
 void Solver::load_clauses() {
-    if (verbosity > 1) fprintf(stderr, "load_clauses()\n");
+    if (verbosity > 1) fprintf(stderr, "load_clauses() start\n");
     // assert(redis_last_learnt_id == learnts.size());
     redisContext* context = get_context();
     vec<Lit> learnt_clause;
 
-    int len = get_redis_queue_len(context);
+    size_t len = get_redis_queue_len(context);
     if (len > 0) {
-        redisReply **elements = rpop(context, len);
-        for (int i = 0; i < len; i++) {
+        redisReply* reply = rpop(context, len);
+        redisReply** data = reply->element;
+        for (size_t i = 0; i < len; ++i) {
             learnt_clause.clear();
-            load_clause(elements[i], learnt_clause);
+            load_clause(data[i], learnt_clause);
         }
+        freeReplyObject(reply);
     }
     redis_free(context);
+    if (verbosity > 1) fprintf(stderr, "load_clauses() end\n");
+}
+
+redisReply* Solver::rpop(redisContext* context, size_t len) {
+    if (verbosity > 1) fprintf(stderr, "rpop(context = %p, len = %ld)\n", context, len);
+    redisReply* reply = (redisReply*) redisCommand(context, "RPOP to_minisat %ld", len);
+
+    if (reply == NULL) {
+        fprintf(stderr, "Error executing RPOP command\n");
+        ok = false;
+        throw 42;
+    }
+
+    redisReply** res;
+
+    if (reply->type == REDIS_REPLY_ARRAY) {
+        if (reply->elements != len) {
+            fprintf(stderr, "Assert failed: reply->elements = %ld, len = %ld", reply->elements, len);
+            throw 42;
+        }
+        assert(len == reply->elements);
+        return reply;
+    } else {
+        fprintf(stderr, "Unexpected reply type: %d\n", reply->type);
+        if (reply->type == REDIS_REPLY_ERROR) {
+            fprintf(stderr, "Redis Error: %s\n", reply->str);
+        }
+        ok = false;
+        freeReplyObject(reply);
+        throw 42;
+    }
+}
+
+bool Solver::load_clause(redisReply* element, vec<Lit>& learnt_clause) {
+    if (verbosity > 1) fprintf(stderr, "load_clause(element = %p)\n", element);
+    if (verbosity > 1) fprintf(stderr, "load_clause(element.type = %d)\n", element->type);
+    if (verbosity > 1) fprintf(stderr, "load_clause(element.str = %s)\n", element->str);
+    assert(learnt_clause.size() == 0);
+
+    if (element == NULL || element->type != REDIS_REPLY_STRING || element->str == NULL) {
+        fprintf(stderr, "Error: element == NULL || element->type != REDIS_REPLY_STRING || element->str == NULL\n");
+        throw 42;
+    }
+    from_str(element->str, learnt_clause);
+
+    if (learnt_clause.size() == 1) {
+        if (verbosity > 1) fprintf(stderr, "unit\n");
+        if (value(learnt_clause[0]) == l_Undef) {
+            uncheckedEnqueue(learnt_clause[0]);
+            fprintf(stderr, "New useful unit: %s%d \n", sign(learnt_clause[0]) ? "-" : "", var(learnt_clause[0]) + 1);
+        } else {
+            if (value(learnt_clause[0]) == l_True) {
+                fprintf(stderr, "Is already %s%d  == l_True \n", sign(learnt_clause[0]) ? "-" : "", var(learnt_clause[0]) + 1);
+            } else {
+                // TODO ok = false
+                fprintf(stderr, "Is already %s%d  == l_False. Is unsat \n", sign(learnt_clause[0]) ? "-" : "", var(learnt_clause[0]) + 1);
+                return ok = false;
+            }
+        }
+    } else {
+        if (verbosity > 1) fprintf(stderr, "not unit\n");
+        CRef cr = ca.alloc(learnt_clause, true);
+        learnts.push(cr);
+        attachClause(cr);
+        claBumpActivity(ca[cr]);
+    }
+    return true;
 }
 
 redisContext* Solver::get_context() {
@@ -1041,11 +1110,11 @@ redisContext* Solver::get_context() {
     return c;
 }
 
-int Solver::get_redis_queue_len(redisContext* context) {
+size_t Solver::get_redis_queue_len(redisContext* context) {
     if (verbosity > 1) fprintf(stderr, "get_redis_queue_len()\n");
 
     // Use the LLEN command to get the length of the list
-    redisReply *reply = (redisReply *)redisCommand(context, "LLEN to_minisat");
+    redisReply* reply = (redisReply*) redisCommand(context, "LLEN to_minisat");
 
     if (reply == NULL) {
         fprintf(stderr, "Error executing LLEN command\n");
@@ -1053,9 +1122,9 @@ int Solver::get_redis_queue_len(redisContext* context) {
         return 0;
     }
 
-    int res;
+    size_t res;
     if (reply->type == REDIS_REPLY_INTEGER) {
-        res = reply->integer;
+        res = (size_t) reply->integer;
     } else {
         fprintf(stderr, "Unexpected reply type: %d\n", reply->type);
         ok = false;
@@ -1066,72 +1135,8 @@ int Solver::get_redis_queue_len(redisContext* context) {
     return res;
 }
 
-redisReply** Solver::rpop(redisContext* context, int len) {
-    if (verbosity > 1) fprintf(stderr, "rpop(context = %p, len = %d)\n", context, len);
-    redisReply *reply = (redisReply*) redisCommand(context, "RPOP to_minisat %d", len);
-    // redisReply *reply;
-    // if (len > 0) {
-        // reply = (redisReply*) redisCommand(context, "LRANGE to_minisat -%d -1", len);
-    // } else {
-        // reply = (redisReply*) redisCommand(context, "LRANGE to_minisat 1 0"); // force empty array
-    // }
-
-    redisReply** res;
-
-    if (reply == NULL) {
-        fprintf(stderr, "Error executing RPOP command\n");
-        ok = false;
-        res = NULL;
-    } else {
-        if (reply->type == REDIS_REPLY_ARRAY) {
-            assert(len == reply->elements);
-            res = reply->element;
-        } else {
-            fprintf(stderr, "Unexpected reply type: %d\n", reply->type);
-            if (reply->type == REDIS_REPLY_ERROR)
-                fprintf(stderr, "Redis Error: %s\n", reply->str);
-            ok = false;
-            res = NULL;
-        }
-    }
-
-    freeReplyObject(reply);
-    return res;
-}
-
 void Solver::redis_free(redisContext* c) {
     redisFree(c);
-}
-
-bool Solver::load_clause(redisReply* element, vec<Lit>& learnt_clause) {
-    if (verbosity > 1) fprintf(stderr, "load_clause(element = %p)\n", element);
-    assert(learnt_clause.size() == 0);
-
-    if (element == NULL || element->type != REDIS_REPLY_STRING || element->str == NULL) {
-        return false;
-    }
-    from_str(element->str, learnt_clause);
-
-    if (learnt_clause.size() == 1) {
-        if (value(learnt_clause[0]) == l_Undef) {
-            uncheckedEnqueue(learnt_clause[0]);
-            fprintf(stderr, "New useful unit: %s%d \n", sign(learnt_clause[0]) ? "-" : "", var(learnt_clause[0]) + 1);
-        } else {
-            if (value(learnt_clause[0]) == l_True) {
-                fprintf(stderr, "Is already %s%d  == l_True \n", sign(learnt_clause[0]) ? "-" : "", var(learnt_clause[0]) + 1);
-            } else {
-                // TODO ok = false
-                fprintf(stderr, "Is already %s%d  == l_False. Is unsat \n", sign(learnt_clause[0]) ? "-" : "", var(learnt_clause[0]) + 1);
-                return ok = false;
-            }
-        }
-    }else{
-        CRef cr = ca.alloc(learnt_clause, true);
-        learnts.push(cr);
-        attachClause(cr);
-        claBumpActivity(ca[cr]);
-    }
-    return true;
 }
 
 bool Solver::redis_save_last_from_minisat_id(redisContext* context, unsigned int last_from_minisat_id) {
